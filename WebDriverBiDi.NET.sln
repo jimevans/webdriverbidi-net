@@ -36,6 +36,7 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WebDriverBiDi.Integration.Tests", "test\WebDriverBiDi.Integration.Tests\WebDriverBiDi.Integration.Tests.csproj", "{FEFC89A1-A56C-4FDD-804D-AEB6B770EBAD}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WebDriverBiDi.Benchmarks", "test\WebDriverBiDi.Benchmarks\WebDriverBiDi.Benchmarks.csproj", "{15BB1497-B8D6-4562-9BEE-1FCA94E60411}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WebDriverBiDi.CodeGen", "src\WebDriverBiDi.CodeGen\WebDriverBiDi.CodeGen.csproj", "{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WebDriverBiDi.NamedPipeTestApplication", "test\WebDriverBiDi.NamedPipeTestApplication\WebDriverBiDi.NamedPipeTestApplication.csproj", "{B1F060F5-EF71-48B4-8EEB-3F74F45D148C}"
 EndProject
@@ -221,6 +222,18 @@ Global
 		{B1F060F5-EF71-48B4-8EEB-3F74F45D148C}.Release|x64.Build.0 = Release|Any CPU
 		{B1F060F5-EF71-48B4-8EEB-3F74F45D148C}.Release|x86.ActiveCfg = Release|Any CPU
 		{B1F060F5-EF71-48B4-8EEB-3F74F45D148C}.Release|x86.Build.0 = Release|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Debug|x64.Build.0 = Debug|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Debug|x86.Build.0 = Debug|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Release|x64.ActiveCfg = Release|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Release|x64.Build.0 = Release|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Release|x86.ActiveCfg = Release|Any CPU
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -241,5 +254,6 @@ Global
 		{FEFC89A1-A56C-4FDD-804D-AEB6B770EBAD} = {731061A2-3861-4672-B5D5-711ADD4F6F47}
 		{15BB1497-B8D6-4562-9BEE-1FCA94E60411} = {731061A2-3861-4672-B5D5-711ADD4F6F47}
 		{B1F060F5-EF71-48B4-8EEB-3F74F45D148C} = {731061A2-3861-4672-B5D5-711ADD4F6F47}
+		{CDD22EC8-DCAB-4CB1-9CDF-33FAAA19B2A8} = {C56741B5-A53D-4C4A-AE6D-DE2CE0F4BC52}
 	EndGlobalSection
 EndGlobal
