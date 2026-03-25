@@ -1,0 +1,43 @@
+{
+  "$comment": "WebDriverBiDi.CodeGen configuration. Pass via: dotnet run --project src/WebDriverBiDi.CodeGen -- --config webdriver-bidi.codegen.json",
+
+  "skipGeneration": [
+    "script.ArrayRemoteValue",
+    "script.ArrayBufferRemoteValue",
+    "script.ErrorRemoteValue",
+    "script.FunctionRemoteValue",
+    "script.GeneratorRemoteValue",
+    "script.HTMLCollectionRemoteValue",
+    "script.MapRemoteValue",
+    "script.NodeListRemoteValue",
+    "script.ObjectRemoteValue",
+    "script.PromiseRemoteValue",
+    "script.ProxyRemoteValue",
+    "script.SetRemoteValue",
+    "script.SymbolRemoteValue",
+    "script.TypedArrayRemoteValue",
+    "script.WeakMapRemoteValue",
+    "script.WeakSetRemoteValue"
+  ],
+
+  "nameMap": {
+    "$comment": "types: override the generated C# class name for a CDDL type. properties: rename specific JSON properties on a CDDL type to a more idiomatic C# name.",
+
+    "types": {
+      "browsingContext.Info": "BrowsingContextInfo"
+    },
+
+    "properties": {
+      "browsingContext.Info": {
+        "context": "BrowsingContextId"
+      },
+      "browsingContext.NavigationInfo": {
+        "context": "BrowsingContextId",
+        "navigation": "NavigationId"
+      },
+      "script.RealmDestroyedParameters": {
+        "realm": "RealmId"
+      }
+    }
+  }
+}

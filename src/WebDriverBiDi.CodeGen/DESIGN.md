@@ -319,3 +319,31 @@ For properties in command parameter classes:
   - File exists with marker and content is identical → silently skip (counted in Unchanged)
 - `--force` flag overrides the hand-crafted guard, treating all existing files as overwritable
 - Dry-run report result: 140 new, 0 updated, 242 skipped (hand-crafted), 4 unchanged
+
+### Phase 7 — First real generation run & build fixes
+- [x] Fixed cross-namespace `using` generation: `FindTypeNamespace` was a stub returning null;
+  replaced with `TypeResolver.ReferencedNonTrivialCddlNames` + `NamingConventions.Namespace`
+  - `ReferencedNonTrivialCddlNames` follows TypeAlias and ArrayAlias chains transitively;
+    skips Registry nodes; yields CDDL name for DataClass/Enum/Union/CommandResult types
+- [x] Added `HandCraftedDataClasses` skip set for 16 `script.*RemoteValue` types whose
+  hand-crafted base (`RemoteValue`) has abstract members (`ToLocalValue()`) and an
+  internal-only constructor; `RemoteValueJsonConverter` already handles all 16 via
+  `CollectionRemoteValue`, `KeyValuePairCollectionRemoteValue`, `ObjectReferenceRemoteValue`
+- [x] Updated generated file header: added `#nullable enable`, `#pragma warning disable CS1591`
+  and `#pragma warning disable CS0108` so auto-generated files compile cleanly
+- [x] Ran the generator: 82 new files written (311 total emitted, 245 hand-crafted skipped)
+- [x] Library and test project build with **0 warnings, 0 errors**
+
+### Phase 8 — Config file: skipGeneration list  *(TODO items 2 & 8)*
+- [x] `--config <path>` CLI flag added to `Program.cs`; config is optional (empty default if omitted)
+- [x] `Config/GeneratorConfig.cs`: `GeneratorConfig` with `SkipGeneration: IReadOnlyList<string>`
+  - Loaded via `System.Text.Json` from the path given by `--config`
+- [x] `CSharpEmitter.Emit()` now accepts `GeneratorConfig? config = null`
+  - `skipSet` built from `config.SkipGeneration` at the top of `Emit()`
+  - All six emit loops (enums, results, params, group results, events, unions, data classes)
+    check `skipSet.Contains(node.Name)` before yielding
+- [x] Removed hardcoded `HandCraftedDataClasses` set from `CSharpEmitter.cs`
+- [x] `webdriver-bidi.codegen.json` created at repo root with the 16 `script.*RemoteValue` types
+- Dry-run with config: 154 classified data classes, 138 emitted (16 skipped via config),
+  311 total files, 66 unchanged
+

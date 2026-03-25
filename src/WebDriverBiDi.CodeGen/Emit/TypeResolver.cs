@@ -88,6 +88,31 @@ public static class TypeResolver
         }
     }
 
+    /// <summary>
+    /// Returns the CDDL names of non-trivial types (data classes, enums, discriminated unions,
+    /// command results) that are transitively referenced by the given type expressions.
+    /// Primitives, type aliases that resolve to primitives, registry/infra nodes, and array aliases
+    /// (which are inlined) are excluded; array aliases are followed into their element types.
+    /// This is used to determine which namespaces to add as 'using' directives in generated files.
+    /// </summary>
+    /// <param name="types">The list of type expressions to examine.</param>
+    /// <param name="byName">The map of CDDL name → AST node.</param>
+    /// <param name="nodeKinds">The map of CDDL name → node kind.</param>
+    /// <returns>A sequence of CDDL names whose namespaces need to be imported.</returns>
+    public static IEnumerable<string> ReferencedNonTrivialCddlNames(
+        IReadOnlyList<AstTypeExpr> types,
+        IReadOnlyDictionary<string, AstNode> byName,
+        IReadOnlyDictionary<string, NodeKind> nodeKinds)
+    {
+        foreach (AstTypeExpr t in types)
+        {
+            foreach (string name in NonTrivialNames(t, byName, nodeKinds, visited: null))
+            {
+                yield return name;
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Primitive and type-level resolution
     // -----------------------------------------------------------------------
@@ -200,6 +225,95 @@ public static class TypeResolver
     // -----------------------------------------------------------------------
     // Reference collection (for 'using' directives)
     // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Recursively walks a single type expression and yields CDDL names of non-trivial types.
+    /// Follows type aliases and array aliases transitively.
+    /// </summary>
+    private static IEnumerable<string> NonTrivialNames(
+        AstTypeExpr expr,
+        IReadOnlyDictionary<string, AstNode> byName,
+        IReadOnlyDictionary<string, NodeKind> nodeKinds,
+        HashSet<string>? visited)
+    {
+        switch (expr)
+        {
+            case AstTypeGroupRef gr:
+                if (!nodeKinds.TryGetValue(gr.Value, out NodeKind kind))
+                {
+                    // Unknown name — yield as best-guess so the caller can attempt the namespace lookup
+                    yield return gr.Value;
+                    yield break;
+                }
+
+                switch (kind)
+                {
+                    case NodeKind.Registry:
+                        // Pure structural/registry nodes — no C# type emitted
+                        yield break;
+
+                    case NodeKind.TypeAlias:
+                        // Follow the alias: if it ultimately leads to a non-trivial group, yield that name
+                        if (byName.TryGetValue(gr.Value, out AstNode? aliasNode) &&
+                            aliasNode is AstVariableNode aliasVar)
+                        {
+                            visited ??= new HashSet<string>(StringComparer.Ordinal);
+                            if (visited.Add(gr.Value))
+                            {
+                                foreach (AstTypeExpr inner in aliasVar.PropertyType)
+                                {
+                                    foreach (string n in NonTrivialNames(inner, byName, nodeKinds, visited))
+                                    {
+                                        yield return n;
+                                    }
+                                }
+                            }
+                        }
+
+                        yield break;
+
+                    case NodeKind.ArrayAlias:
+                        // Array aliases are inlined as List<T> — recurse into element types
+                        if (byName.TryGetValue(gr.Value, out AstNode? arrNode) &&
+                            arrNode is AstArrayNode arrayAlias)
+                        {
+                            foreach (AstPropertyEntry entry in arrayAlias.Values)
+                            {
+                                foreach (AstTypeExpr t in entry.Type)
+                                {
+                                    foreach (string n in NonTrivialNames(t, byName, nodeKinds, visited))
+                                    {
+                                        yield return n;
+                                    }
+                                }
+                            }
+                        }
+
+                        yield break;
+
+                    default:
+                        // DataClass, Enum, DiscriminatedUnion, CommandResult, Event, Command
+                        yield return gr.Value;
+                        yield break;
+                }
+
+            case AstTypeArrayExpr arr:
+                // Recurse into the array element types
+                foreach (AstPropertyEntry entry in arr.Values)
+                {
+                    foreach (AstTypeExpr t in entry.Type)
+                    {
+                        foreach (string n in NonTrivialNames(t, byName, nodeKinds, visited))
+                        {
+                            yield return n;
+                        }
+                    }
+                }
+
+                break;
+        }
+    }
+
     private static IEnumerable<string> ReferencedNames(AstTypeExpr expr)
     {
         switch (expr)

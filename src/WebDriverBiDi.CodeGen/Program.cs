@@ -5,6 +5,7 @@
 
 using System.Text.Json;
 using WebDriverBiDi.CodeGen.Ast;
+using WebDriverBiDi.CodeGen.Config;
 using WebDriverBiDi.CodeGen.Emit;
 using WebDriverBiDi.CodeGen.Model;
 
@@ -13,6 +14,7 @@ using WebDriverBiDi.CodeGen.Model;
 // ---------------------------------------------------------------------------
 string astPath = "third_party/spec/webdriver-bidi.ast.json";
 string outPath = "src/WebDriverBiDi";
+string? configPath = null;
 bool dryRun = false;
 bool force = false;
 
@@ -26,6 +28,9 @@ for (int i = 0; i < args.Length; i++)
         case "--out" when i + 1 < args.Length:
             outPath = args[++i];
             break;
+        case "--config" when i + 1 < args.Length:
+            configPath = args[++i];
+            break;
         case "--dry-run":
             dryRun = true;
             break;
@@ -34,9 +39,32 @@ for (int i = 0; i < args.Length; i++)
             break;
         default:
             Console.Error.WriteLine($"Unknown argument: {args[i]}");
-            Console.Error.WriteLine("Usage: WebDriverBiDi.CodeGen [--ast <path>] [--out <path>] [--dry-run] [--force]");
+            Console.Error.WriteLine("Usage: WebDriverBiDi.CodeGen [--ast <path>] [--out <path>] [--config <path>] [--dry-run] [--force]");
             return 1;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Load optional config file
+// ---------------------------------------------------------------------------
+GeneratorConfig config = new();
+if (configPath is not null)
+{
+    if (!File.Exists(configPath))
+    {
+        Console.Error.WriteLine($"Config file not found: {Path.GetFullPath(configPath)}");
+        return 1;
+    }
+
+    Console.WriteLine($"Loading config: {Path.GetFullPath(configPath)}");
+    string configJson = await File.ReadAllTextAsync(configPath);
+    JsonSerializerOptions configOptions = new()
+    {
+        PropertyNameCaseInsensitive = false,
+        AllowTrailingCommas = true,
+    };
+    config = JsonSerializer.Deserialize<GeneratorConfig>(configJson, configOptions)
+        ?? new GeneratorConfig();
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +128,7 @@ Console.WriteLine();
 // ---------------------------------------------------------------------------
 // Emit C# files (Phase 3: enums, EmptyResult results, EmptyParams params)
 // ---------------------------------------------------------------------------
-IList<(string RelativePath, string Source)> files = CSharpEmitter.Emit(model, byName).ToList();
+IList<(string RelativePath, string Source)> files = CSharpEmitter.Emit(model, byName, config).ToList();
 
 int enumFiles = files.Count(f => IsEnumFile(f.Source));
 int unionFiles = files.Count(f => IsUnionFile(f.Source));

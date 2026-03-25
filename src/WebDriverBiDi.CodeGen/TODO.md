@@ -17,7 +17,11 @@ Deserialization-only data classes (reachable only from results or events) contin
 
 ---
 
-## 2. Config file: timestamp property overrides  *(introduces --config flag)*
+## 2. Config file: timestamp property overrides
+
+> **Infrastructure status:** `--config <path>` CLI flag, `Config/GeneratorConfig.cs`, and
+> `webdriver-bidi.codegen.json` were introduced as part of item 8 below. The `propertyOverrides`
+> section still needs to be added to `GeneratorConfig` and wired into the emitter.
 
 **Affected hand-crafted pattern:**
 ```csharp
@@ -29,21 +33,34 @@ internal ulong EpochTimestamp { get; set; }   // JSON-serialized
 public DateTime Timestamp { get; internal set; } // computed public API
 ```
 
-Add a `--config <path>` CLI flag pointing to a JSON file.
-Add a `propertyOverrides` section that maps a CDDL type name + property name to emit the
-timestamp split pattern (internal `ulong` serializable property + computed public `DateTime`).
+Add a `propertyOverrides` section to the config file that maps a CDDL type name + property name
+to emit the timestamp split pattern (internal `ulong` serializable property + computed public
+`DateTime`).
 
 ---
 
-## 3. Config file: type and property name remapping
+## ~~3. Config file: type and property name remapping~~ ✅ DONE
 
-Extend the config file with a `nameMap` section allowing the generated .NET class or property
-name to differ from the CDDL-derived name. Examples:
+`Config/NameMapConfig.cs` defines `NameMapConfig` with `Types` (CDDL name → C# class name) and
+`Properties` (CDDL type name → {JSON prop name → C# prop name}) dictionaries.
+`GeneratorConfig` has a `NameMap` property of type `NameMapConfig`.
 
-- `browsingContext.BrowsingContext` type alias property `context` → C# property `BrowsingContextId`
-- `browsingContext.Navigation` property `navigation` → `NavigationId`
-- `browsingContext.Info` class → `BrowsingContextInfo`
-- `script.Realm` property `realm` → `RealmId`
+`CSharpEmitter` uses a private `EmitContext` class that wraps the config and exposes:
+- `ResolveClassName(cddlName, derivedName)` — used in all 8 emit methods and `ResolveMemberTypeName`
+- `ResolvePropName(ownerCddlName, jsonName)` — used in `AddPropSpec`; `ownerCddlName` is threaded
+  through `GatherProperties` recursion so overrides apply to all flattened group-inclusion properties
+
+Example entries in `webdriver-bidi.codegen.json`:
+```json
+"nameMap": {
+  "types": { "browsingContext.Info": "BrowsingContextInfo" },
+  "properties": {
+    "browsingContext.Info": { "context": "BrowsingContextId" },
+    "browsingContext.NavigationInfo": { "context": "BrowsingContextId", "navigation": "NavigationId" },
+    "script.RealmDestroyedParameters": { "realm": "RealmId" }
+  }
+}
+```
 
 ---
 
@@ -101,19 +118,22 @@ pattern, the inner type to wrap, and the property subset to expose (with optiona
 
 ---
 
-## 8. Config file: skipGeneration list
+## ~~8. Config file: skipGeneration list~~ ✅ DONE
 
-Add a `skipGeneration` list of CDDL names that are permanently excluded from all emission,
-even with `--force`. These types require hand-crafted custom JSON converters that express
-runtime type dispatch the generator cannot reproduce from the CDDL alone:
+`Config/GeneratorConfig.cs` defines `GeneratorConfig` with a `SkipGeneration` list.
+`CSharpEmitter.Emit()` accepts a `GeneratorConfig?` parameter and skips any node whose CDDL
+name is in the set (applies to all emit loops: enums, results, params, events, unions, data classes).
+`webdriver-bidi.codegen.json` at the repo root contains the 16 `script.*RemoteValue` entries
+that were previously hard-coded in `HandCraftedDataClasses` inside `CSharpEmitter.cs`.
+
+The table below documents which additional entries belong in `skipGeneration` once their
+hand-crafted files are verified to be correct and complete:
 
 | CDDL name | Converter | Reason |
 |---|---|---|
-| `script.RemoteValue` (+ all ~20 subtypes) | `RemoteValueJsonConverter` | `value` field type depends on `type` at runtime |
+| `script.RemoteValue` (+ all ~20 subtypes) | `RemoteValueJsonConverter` | `value` field type depends on `type` at runtime — 16 subtypes already in config |
 | `script.Target` | `ScriptTargetJsonConverter` | Discriminates context vs realm by shape |
 | `script.RealmInfo` (+ realm subclasses) | `RealmInfoJsonConverter` | Discriminates by `type` field |
 | `script.EvaluateResult` (+ success/exception) | `ScriptEvaluateResultJsonConverter` | Success vs exception polymorphism |
 | `log.Entry` / `log.*LogEntry` | `LogEntryJsonConverter` | Discriminates log entry kind by `type` |
 | `session.ProxyConfiguration` (+ subtypes) | `ProxyConfigurationJsonConverter` | Discriminates by `proxyType` field |
-
-These types will always be hand-crafted and should never be accidentally overwritten.
