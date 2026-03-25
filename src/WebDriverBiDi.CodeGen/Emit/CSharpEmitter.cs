@@ -136,6 +136,14 @@ public static class CSharpEmitter
         // Collect data classes transitively reachable from command params (need public setters)
         IReadOnlySet<string> paramsReachable = CollectParamsReachableTypes(model, byName);
 
+        // Pre-compute shared properties for every union (including skipped ones, because their
+        // members still need to know which properties to emit as overrides)
+        Dictionary<string, IReadOnlyList<PropSpec>> sharedByUnion = new(StringComparer.Ordinal);
+        foreach (DiscriminatedUnionDef u in model.DiscriminatedUnions)
+        {
+            sharedByUnion[u.AstNode.Name] = FindSharedProperties(u, byName, model.NodeKinds, ctx);
+        }
+
         // Discriminated union abstract base classes
         foreach (DiscriminatedUnionDef u in model.DiscriminatedUnions)
         {
@@ -144,7 +152,7 @@ public static class CSharpEmitter
                 continue;
             }
 
-            yield return EmitDiscriminatedUnion(u, model.NodeKinds, ctx);
+            yield return EmitDiscriminatedUnion(u, model.NodeKinds, sharedByUnion[u.AstNode.Name], ctx);
         }
 
         // Data classes (with union base class where applicable)
@@ -155,7 +163,7 @@ public static class CSharpEmitter
                 continue;
             }
 
-            yield return EmitDataClass(d, model, byName, memberToUnion, paramsReachable, ctx);
+            yield return EmitDataClass(d, model, byName, memberToUnion, paramsReachable, sharedByUnion, ctx);
         }
     }
 
@@ -306,6 +314,78 @@ public static class CSharpEmitter
                 yield return refName;
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 5: Shared property analysis for discriminated unions
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Returns the list of properties that are common to ALL members of a discriminated union
+    /// (same JSON name present in every member's flattened property set).
+    /// The returned PropSpec values are taken from the first member.
+    /// Returns an empty list when any member has no corresponding AstGroupNode,
+    /// or when there are no common properties.
+    /// </summary>
+    private static IReadOnlyList<PropSpec> FindSharedProperties(
+        DiscriminatedUnionDef u,
+        IReadOnlyDictionary<string, AstNode> byName,
+        IReadOnlyDictionary<string, NodeKind> nodeKinds,
+        EmitContext ctx)
+    {
+        List<List<PropSpec>> allMemberProps = new();
+        foreach (string memberName in u.MemberTypeNames)
+        {
+            if (byName.TryGetValue(memberName, out AstNode? node) && node is AstGroupNode group)
+            {
+                allMemberProps.Add(GatherProperties(group, memberName, byName, nodeKinds, ctx));
+            }
+        }
+
+        // If any member has no group node we cannot safely determine shared properties
+        if (allMemberProps.Count == 0 || allMemberProps.Count < u.MemberTypeNames.Count)
+        {
+            return [];
+        }
+
+        // Intersect by JSON name
+        HashSet<string> commonNames = allMemberProps[0]
+            .Select(p => p.JsonName)
+            .ToHashSet(StringComparer.Ordinal);
+
+        for (int i = 1; i < allMemberProps.Count; i++)
+        {
+            commonNames.IntersectWith(
+                allMemberProps[i].Select(p => p.JsonName).ToHashSet(StringComparer.Ordinal));
+        }
+
+        if (commonNames.Count == 0)
+        {
+            return [];
+        }
+
+        // Additionally require the C# type to be consistent across all members.
+        // A property with different types in different members (e.g. string vs JsonElement)
+        // cannot be safely declared abstract on the base class.
+        Dictionary<string, string> typeByName = allMemberProps[0]
+            .Where(p => commonNames.Contains(p.JsonName))
+            .ToDictionary(p => p.JsonName, p => p.CSharpType, StringComparer.Ordinal);
+
+        for (int i = 1; i < allMemberProps.Count; i++)
+        {
+            foreach (PropSpec p in allMemberProps[i].Where(p => commonNames.Contains(p.JsonName)))
+            {
+                if (typeByName.TryGetValue(p.JsonName, out string? expectedType) &&
+                    expectedType != p.CSharpType)
+                {
+                    commonNames.Remove(p.JsonName);
+                }
+            }
+        }
+
+        return allMemberProps[0]
+            .Where(p => commonNames.Contains(p.JsonName))
+            .ToList();
     }
 
     // -----------------------------------------------------------------------
@@ -589,6 +669,7 @@ public static class CSharpEmitter
         IReadOnlyDictionary<string, AstNode> byName,
         IReadOnlyDictionary<string, string>? memberToUnion = null,
         IReadOnlySet<string>? paramsReachable = null,
+        IReadOnlyDictionary<string, IReadOnlyList<PropSpec>>? sharedByUnion = null,
         EmitContext? ctx = null)
     {
         ctx ??= new EmitContext(null);
@@ -603,11 +684,20 @@ public static class CSharpEmitter
 
         // Determine base class if this data class is a union member
         string? baseClass = null;
+        string? unionCddlName = null;
         if (memberToUnion is not null &&
-            memberToUnion.TryGetValue(d.AstNode.Name, out string? unionCddlName))
+            memberToUnion.TryGetValue(d.AstNode.Name, out string? resolvedUnionName))
         {
+            unionCddlName = resolvedUnionName;
             baseClass = ctx.ResolveClassName(unionCddlName, NamingConventions.LocalName(unionCddlName));
         }
+
+        // JSON names of properties declared abstract on the union base — emit as overrides here
+        IReadOnlySet<string> sharedJsonNames = unionCddlName is not null &&
+            sharedByUnion is not null &&
+            sharedByUnion.TryGetValue(unionCddlName, out IReadOnlyList<PropSpec>? unionShared)
+            ? unionShared.Select(p => p.JsonName).ToHashSet(StringComparer.Ordinal)
+            : (IReadOnlySet<string>)new HashSet<string>(StringComparer.Ordinal);
 
         bool isParamsReachable = paramsReachable is not null &&
             paramsReachable.Contains(d.AstNode.Name);
@@ -618,9 +708,14 @@ public static class CSharpEmitter
         sb.AppendLine($"namespace {ns};");
         sb.AppendLine();
         AppendUsings(sb, usings);
+
+        // Use 'class' when params-reachable (needs public construction) or when inheriting from
+        // a union abstract class (C# requires both sides of the hierarchy to be record or class).
+        bool mustBeClass = isParamsReachable || baseClass is not null;
+        string keyword = mustBeClass ? "class" : "record";
         string classDecl = baseClass is not null
-            ? $"public record {csharpName} : {baseClass}"
-            : $"public record {csharpName}";
+            ? $"public {keyword} {csharpName} : {baseClass}"
+            : $"public {keyword} {csharpName}";
         sb.AppendLine(classDecl);
         sb.AppendLine("{");
 
@@ -636,7 +731,7 @@ public static class CSharpEmitter
             sb.AppendLine("    {");
             sb.AppendLine("    }");
             sb.AppendLine();
-            AppendParamsDataClassProperties(sb, props);
+            AppendParamsDataClassProperties(sb, props, sharedJsonNames);
         }
         else
         {
@@ -651,7 +746,7 @@ public static class CSharpEmitter
             sb.AppendLine("    {");
             sb.AppendLine("    }");
             sb.AppendLine();
-            AppendDeserializationProperties(sb, props);
+            AppendDeserializationProperties(sb, props, sharedJsonNames);
         }
 
         sb.AppendLine("}");
@@ -664,6 +759,7 @@ public static class CSharpEmitter
     private static (string RelativePath, string Code) EmitDiscriminatedUnion(
         DiscriminatedUnionDef u,
         IReadOnlyDictionary<string, NodeKind> nodeKinds,
+        IReadOnlyList<PropSpec> sharedProps,
         EmitContext ctx)
     {
         string csharpName = ctx.ResolveClassName(u.AstNode.Name, NamingConventions.LocalName(u.AstNode.Name));
@@ -672,13 +768,14 @@ public static class CSharpEmitter
         string fileName = csharpName + ".cs";
         string relativePath = subdir.Length > 0 ? $"{subdir}/{fileName}" : fileName;
 
+        IReadOnlyList<string> usings = GatherUsings(sharedProps.ToList(), ns, isCommandParams: false);
+
         StringBuilder sb = new();
         sb.AppendFormat(CopyrightHeader, fileName);
         sb.AppendLine();
         sb.AppendLine($"namespace {ns};");
         sb.AppendLine();
-        sb.AppendLine("using System.Text.Json.Serialization;");
-        sb.AppendLine();
+        AppendUsings(sb, usings);
 
         // [JsonDerivedType] for each member
         foreach (string memberCddlName in u.MemberTypeNames)
@@ -687,8 +784,27 @@ public static class CSharpEmitter
             sb.AppendLine($"[JsonDerivedType(typeof({memberCsharp}))]");
         }
 
-        sb.AppendLine($"public abstract record {csharpName}");
+        sb.AppendLine($"public abstract class {csharpName}");
         sb.AppendLine("{");
+
+        if (sharedProps.Count > 0)
+        {
+            bool firstProp = true;
+            foreach (PropSpec p in sharedProps)
+            {
+                if (!firstProp)
+                {
+                    sb.AppendLine();
+                }
+
+                firstProp = false;
+                sb.AppendLine($"    [JsonPropertyName(\"{p.JsonName}\")]");
+                sb.AppendLine($"    public abstract {p.CSharpType} {p.CSharpName} {{ get; }}");
+            }
+
+            sb.AppendLine();
+        }
+
         sb.AppendLine("}");
         return (relativePath, sb.ToString());
     }
@@ -783,13 +899,32 @@ public static class CSharpEmitter
         (string csType, bool isList, string listElem) = TypeResolver.Resolve(entry.Type, byName, nodeKinds);
         List<string> referencedCddlNames = TypeResolver.ReferencedNonTrivialCddlNames(entry.Type, byName, nodeKinds).Distinct().ToList();
 
-        result.Add(new PropSpec(jsonName, csharpName, csType, !isOptional, isList, listElem, referencedCddlNames));
+        string? literalValue = null;
+        if (entry.Type.Count == 1)
+        {
+            if (entry.Type[0] is AstTypeLiteralExpr lit)
+            {
+                literalValue = lit.Value;
+            }
+            else if (entry.Type[0] is AstTypePrimitiveExpr { TypeName: "null" })
+            {
+                // AST parser limitation: the string literal "null" is stored as the null primitive
+                // type rather than AstTypeLiteralExpr. Treat it as the string literal "null".
+                literalValue = "null";
+                csType = "string";
+            }
+        }
+
+        result.Add(new PropSpec(jsonName, csharpName, csType, !isOptional, isList, listElem, referencedCddlNames, literalValue));
     }
 
     // -----------------------------------------------------------------------
     // Property emission: deserialization context (results, data, event args)
     // -----------------------------------------------------------------------
-    private static void AppendDeserializationProperties(StringBuilder sb, List<PropSpec> props)
+    private static void AppendDeserializationProperties(
+        StringBuilder sb,
+        List<PropSpec> props,
+        IReadOnlySet<string>? sharedJsonNames = null)
     {
         bool firstProp = true;
         foreach (PropSpec p in props)
@@ -801,11 +936,21 @@ public static class CSharpEmitter
 
             firstProp = false;
 
+            bool isShared = sharedJsonNames?.Contains(p.JsonName) == true;
+            if (isShared && p.LiteralValue is not null)
+            {
+                // Literal discriminator: bake the value in as a computed override
+                sb.AppendLine($"    [JsonPropertyName(\"{p.JsonName}\")]");
+                sb.AppendLine($"    public override string {p.CSharpName} => \"{EscapeString(p.LiteralValue)}\";");
+                continue;
+            }
+
+            string propModifier = isShared ? "override " : string.Empty;
             if (p.IsList)
             {
                 // Public IList<T> wrapping an internal List<T>
                 sb.AppendLine($"    [JsonIgnore]");
-                sb.AppendLine($"    public IList<{p.ListElementType}> {p.CSharpName} => this.Serializable{p.CSharpName}.AsReadOnly();");
+                sb.AppendLine($"    public {propModifier}IList<{p.ListElementType}> {p.CSharpName} => this.Serializable{p.CSharpName}.AsReadOnly();");
                 sb.AppendLine();
                 if (p.IsRequired)
                 {
@@ -831,11 +976,11 @@ public static class CSharpEmitter
                 // Keep '?' when CDDL union includes null — field is required to be present but value may be null
                 if (p.CSharpType.EndsWith('?'))
                 {
-                    sb.AppendLine($"    public {p.CSharpType} {p.CSharpName} {{ get; internal set; }}");
+                    sb.AppendLine($"    public {propModifier}{p.CSharpType} {p.CSharpName} {{ get; internal set; }}");
                 }
                 else
                 {
-                    sb.AppendLine($"    public {p.CSharpType} {p.CSharpName} {{ get; internal set; }} = default!;");
+                    sb.AppendLine($"    public {propModifier}{p.CSharpType} {p.CSharpName} {{ get; internal set; }} = default!;");
                 }
             }
             else
@@ -845,7 +990,7 @@ public static class CSharpEmitter
                 sb.AppendLine($"    [JsonPropertyName(\"{p.JsonName}\")]");
                 sb.AppendLine($"    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]");
                 sb.AppendLine($"    [JsonInclude]");
-                sb.AppendLine($"    public {nullableType} {p.CSharpName} {{ get; internal set; }}");
+                sb.AppendLine($"    public {propModifier}{nullableType} {p.CSharpName} {{ get; internal set; }}");
             }
         }
 
@@ -915,7 +1060,10 @@ public static class CSharpEmitter
     // -----------------------------------------------------------------------
     // Property emission: params-reachable data class (public set, plain List<T>)
     // -----------------------------------------------------------------------
-    private static void AppendParamsDataClassProperties(StringBuilder sb, List<PropSpec> props)
+    private static void AppendParamsDataClassProperties(
+        StringBuilder sb,
+        List<PropSpec> props,
+        IReadOnlySet<string>? sharedJsonNames = null)
     {
         bool firstProp = true;
         foreach (PropSpec p in props)
@@ -927,17 +1075,27 @@ public static class CSharpEmitter
 
             firstProp = false;
 
+            bool isShared = sharedJsonNames?.Contains(p.JsonName) == true;
+            if (isShared && p.LiteralValue is not null)
+            {
+                // Literal discriminator: bake the value in as a computed override
+                sb.AppendLine($"    [JsonPropertyName(\"{p.JsonName}\")]");
+                sb.AppendLine($"    public override string {p.CSharpName} => \"{EscapeString(p.LiteralValue)}\";");
+                continue;
+            }
+
+            string propModifier = isShared ? "override " : string.Empty;
             if (p.IsList)
             {
                 sb.AppendLine($"    [JsonPropertyName(\"{p.JsonName}\")]");
                 if (!p.IsRequired)
                 {
                     sb.AppendLine($"    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]");
-                    sb.AppendLine($"    public List<{p.ListElementType}>? {p.CSharpName} {{ get; set; }}");
+                    sb.AppendLine($"    public {propModifier}List<{p.ListElementType}>? {p.CSharpName} {{ get; set; }}");
                 }
                 else
                 {
-                    sb.AppendLine($"    public List<{p.ListElementType}> {p.CSharpName} {{ get; set; }} = [];");
+                    sb.AppendLine($"    public {propModifier}List<{p.ListElementType}> {p.CSharpName} {{ get; set; }} = [];");
                 }
             }
             else if (p.IsRequired)
@@ -945,11 +1103,11 @@ public static class CSharpEmitter
                 sb.AppendLine($"    [JsonPropertyName(\"{p.JsonName}\")]");
                 if (p.CSharpType.EndsWith('?'))
                 {
-                    sb.AppendLine($"    public {p.CSharpType} {p.CSharpName} {{ get; set; }}");
+                    sb.AppendLine($"    public {propModifier}{p.CSharpType} {p.CSharpName} {{ get; set; }}");
                 }
                 else
                 {
-                    sb.AppendLine($"    public {p.CSharpType} {p.CSharpName} {{ get; set; }} = default!;");
+                    sb.AppendLine($"    public {propModifier}{p.CSharpType} {p.CSharpName} {{ get; set; }} = default!;");
                 }
             }
             else
@@ -957,7 +1115,7 @@ public static class CSharpEmitter
                 string nullableType = p.CSharpType.EndsWith('?') ? p.CSharpType : p.CSharpType + "?";
                 sb.AppendLine($"    [JsonPropertyName(\"{p.JsonName}\")]");
                 sb.AppendLine($"    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]");
-                sb.AppendLine($"    public {nullableType} {p.CSharpName} {{ get; set; }}");
+                sb.AppendLine($"    public {propModifier}{nullableType} {p.CSharpName} {{ get; set; }}");
             }
         }
 
@@ -1037,7 +1195,8 @@ public static class CSharpEmitter
         bool IsRequired,
         bool IsList,
         string ListElementType,
-        IReadOnlyList<string> ReferencedCddlNames);
+        IReadOnlyList<string> ReferencedCddlNames,
+        string? LiteralValue = null);
 
     // -----------------------------------------------------------------------
     // Emit context: carries per-run config data to avoid threading many params
